@@ -13,6 +13,46 @@ from ayon_houdini.api.usd import remap_paths
 import hou
 
 
+def ensure_main_usd_representation(instance, output):
+    """Register the USD ROP output once, before references are remapped."""
+    expected = {
+        "name": "usd",
+        "ext": "usd",
+        "files": os.path.basename(output),
+        "stagingDir": os.path.dirname(output),
+    }
+    representations = instance.data.setdefault("representations", [])
+    matches = [repre for repre in representations
+               if repre.get("name") == "usd"]
+    if matches:
+        if len(matches) != 1 or any(
+            matches[0].get(key) != expected[key]
+            for key in ("ext", "files", "stagingDir")
+        ):
+            raise PublishError(
+                "A different USD representation already exists for the "
+                f"USD ROP output {output!r}."
+            )
+        return
+    representations.append(expected)
+
+
+class CollectUSDMainRepresentation(plugin.HoudiniInstancePlugin):
+    """Plan each main USD ROP output before any USD extraction begins."""
+
+    order = pyblish.api.CollectorOrder + 0.49
+    label = "Collect Main USD Representation"
+    families = ["usdrop"]
+
+    def process(self, instance):
+        ropnode = hou.node(instance.data.get("instance_node"))
+        if not ropnode:
+            return
+        output = ropnode.evalParm("lopoutput")
+        if output:
+            ensure_main_usd_representation(instance, output)
+
+
 class ExtractUSD(plugin.HoudiniExtractorPlugin):
 
     order = pyblish.api.ExtractorOrder
@@ -27,11 +67,11 @@ class ExtractUSD(plugin.HoudiniExtractorPlugin):
 
         # Get the filename from the filename parameter
         output = ropnode.evalParm("lopoutput")
+        ensure_main_usd_representation(instance, output)
         staging_dir = os.path.dirname(output)
         instance.data["stagingDir"] = staging_dir
-        file_name = os.path.basename(output)
-
-        self.log.info("Writing USD '%s' to '%s'" % (file_name, staging_dir))
+        self.log.info("Writing USD '%s' to '%s'" % (
+            os.path.basename(output), staging_dir))
 
         mapping = self.get_source_to_publish_paths(instance.context)
         if mapping:
@@ -50,17 +90,6 @@ class ExtractUSD(plugin.HoudiniExtractorPlugin):
 
         if not os.path.exists(output):
             raise PublishError(f"Output does not exist: {output}")
-
-        if "representations" not in instance.data:
-            instance.data["representations"] = []
-
-        representation = {
-            'name': 'usd',
-            'ext': 'usd',
-            'files': file_name,
-            "stagingDir": staging_dir,
-        }
-        instance.data["representations"].append(representation)
 
     def get_source_to_publish_paths(self,
                                     context):
