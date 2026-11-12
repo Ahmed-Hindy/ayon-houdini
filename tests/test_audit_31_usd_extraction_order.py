@@ -218,6 +218,44 @@ class TestUsdPlanning(unittest.TestCase):
             with self.assertRaises(PublishError):
                 collector.process(b)
 
+    def test_changed_later_output_fails_before_dependent_render(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context, a, b, child, collector, extractor, paths, env = (
+                self.build(tmp)
+            )
+            collector.process(a)
+            collector.process(b)
+            render_calls = []
+            env["render_rop"] = lambda node: render_calls.append(node)
+            original_lookup = env["hou"].node
+            changed_path = str(Path(tmp) / "changed_B.usda")
+            env["hou"].node = lambda path: (
+                types.SimpleNamespace(
+                    path="/out/B", evalParm=lambda name: changed_path
+                )
+                if path == "/out/B"
+                else original_lookup(path)
+            )
+            with self.assertRaisesRegex(PublishError, "different USD"):
+                extractor.process(a)
+            self.assertEqual(render_calls, [])
+            self.assertFalse(Path(paths["/out/A"]).exists())
+
+    def test_disabled_usd_instance_does_not_block_extraction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context, a, b, child, collector, extractor, paths, env = (
+                self.build(tmp)
+            )
+            collector.process(a)
+            collector.process(b)
+            b.data["active"] = False
+            original_lookup = env["hou"].node
+            env["hou"].node = lambda path: (
+                None if path == "/out/B" else original_lookup(path)
+            )
+            extractor.process(a)
+            self.assertTrue(Path(paths["/out/A"]).exists())
+
 
 if __name__ == "__main__":
     unittest.main()

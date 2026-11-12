@@ -63,6 +63,10 @@ class ExtractUSD(plugin.HoudiniExtractorPlugin):
 
     def process(self, instance):
 
+        # Validate all planned outputs before rendering any dependent USD.
+        # Otherwise a changed output for a later ROP could be detected only
+        # after an earlier ROP has already used its stale mapping.
+        self.validate_planned_outputs(instance.context)
         ropnode = hou.node(instance.data.get("instance_node"))
 
         # Get the filename from the filename parameter
@@ -90,6 +94,26 @@ class ExtractUSD(plugin.HoudiniExtractorPlugin):
 
         if not os.path.exists(output):
             raise PublishError(f"Output does not exist: {output}")
+
+    @staticmethod
+    def validate_planned_outputs(context):
+        """Reject changed or unavailable active USD ROP output paths."""
+        for instance in context:
+            data = instance.data
+            if not data.get("active", True) or not data.get("publish", True):
+                continue
+            if data.get("family") != "usdrop" and "usdrop" not in (
+                    data.get("families") or []):
+                continue
+            node_path = data.get("instance_node")
+            ropnode = hou.node(node_path) if node_path else None
+            if ropnode is None:
+                raise PublishError(f"USD ROP no longer exists: {node_path!r}")
+            output = ropnode.evalParm("lopoutput")
+            if not output:
+                raise PublishError(
+                    f"USD ROP has no output path: {node_path!r}")
+            ensure_main_usd_representation(instance, output)
 
     def get_source_to_publish_paths(self,
                                     context):
