@@ -1,6 +1,15 @@
 from ayon_houdini.api.lib import remove_all_thumbnails
+from ayon_core.settings import get_current_project_settings
 
 
 # Clear thumbnails
 node = kwargs["node"]
 remove_all_thumbnails(node)
+
+# Get attribute defaults from settings
+settings = get_current_project_settings()
+load_settings = (
+    settings.get("houdini", {}).get("load", {}).get("LOPLoadAssetLoader", {})
+)
+use_ayon_entity_uri = load_settings.get("use_ayon_entity_uri", False)
+node.parm("use_ayon_entity_uri").set(use_ayon_entity_uri)
