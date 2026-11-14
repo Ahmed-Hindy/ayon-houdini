@@ -1,6 +1,6 @@
 import os
 import hou
-from typing import Optional
+from typing import Dict, List, Optional
 
 import pyblish.api
 
@@ -174,20 +174,109 @@ class CollectUSDValueClips(plugin.HoudiniInstancePlugin):
             transfers = target_instance.data.setdefault("transfers", [])
             resources_dir = target_instance.data["resourcesDir"]
             resources_dir_name = os.path.basename(resources_dir)
-            for src in files:
+            used_dests: Dict[str, str] = {
+                os.path.normpath(dst): os.path.normpath(src)
+                for src, dst in transfers
+            }
+            valid_files = [src for src in files if src]
+            rel_dir = self._find_unique_clip_dir(
+                valid_files, resources_dir, used_dests
+            )
+
+            for src in valid_files:
                 # Make relative transfers of these files and remap
                 # them to relative paths from the published USD layer
                 src_name = os.path.basename(src)
-                transfers.append(
-                    (src, os.path.join(resources_dir, src_name))
+                norm_src = os.path.normpath(src)
+                file_rel_dir = rel_dir
+                dest = self._build_dest_path(
+                    resources_dir, file_rel_dir, src_name
                 )
+                norm_dest = os.path.normpath(dest)
+                # Guard against duplicate basenames within the same node.
+                if (
+                    norm_dest in used_dests
+                    and used_dests[norm_dest] != norm_src
+                ):
+                    extra_idx = 1
+                    while True:
+                        candidate_dir = (
+                            f"{rel_dir}/{extra_idx}"
+                            if rel_dir
+                            else str(extra_idx)
+                        )
+                        dest = self._build_dest_path(
+                            resources_dir, candidate_dir, src_name
+                        )
+                        norm_dest = os.path.normpath(dest)
+                        existing_src = used_dests.get(norm_dest)
+                        if existing_src is None or existing_src == norm_src:
+                            file_rel_dir = candidate_dir
+                            break
+                        extra_idx += 1
 
-                asset_remap[src] = f"./{resources_dir_name}/{src_name}"
+                if norm_dest not in used_dests:
+                    used_dests[norm_dest] = norm_src
+                    transfers.append((src, dest))
+
+                rel_path = (
+                    f"{file_rel_dir}/{src_name}"
+                    if file_rel_dir
+                    else src_name
+                )
+                asset_remap[src] = f"./{resources_dir_name}/{rel_path}"
 
                 self.log.debug(
                     "Registering transfer & remap: "
                     f"{src} -> {asset_remap[src]}"
                 )
+
+    @classmethod
+    def _build_dest_path(
+        cls, resources_dir: str, rel_dir: str, filename: str
+    ) -> str:
+        """Build transfer destination path under ``resources_dir``."""
+        if rel_dir:
+            return os.path.join(resources_dir, rel_dir, filename)
+        return os.path.join(resources_dir, filename)
+
+    @classmethod
+    def _find_unique_clip_dir(
+        cls,
+        files: List[str],
+        resources_dir: str,
+        used_dests: Dict[str, str],
+    ) -> str:
+        """Return a collision-free subfolder under ``resources_dir``.
+
+        Args:
+            files (List[str]): Source file paths for a clip sequence node.
+            resources_dir (str): Instance resources directory.
+            used_dests (Dict[str, str]): Already-queued normalized
+                destination paths mapped to normalized source paths.
+
+        Returns:
+            str: Relative subfolder name (empty string if root is free).
+        """
+        sub_idx = 0
+        while True:
+            rel_dir = str(sub_idx) if sub_idx else ""
+            collision = False
+            for src in files:
+                dest = cls._build_dest_path(
+                    resources_dir, rel_dir, os.path.basename(src)
+                )
+                existing_src = used_dests.get(os.path.normpath(dest))
+                if (
+                    existing_src is not None
+                    and existing_src != os.path.normpath(src)
+                ):
+                    collision = True
+                    break
+
+            if not collision:
+                return rel_dir
+            sub_idx += 1
 
     def _get_geoclipsequence_clip_files(
         self, clip_node: hou.Node, parm_name: str, start: int, end: int
