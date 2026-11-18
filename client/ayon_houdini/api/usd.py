@@ -293,18 +293,22 @@ def setup_lop_python_layer(layer, node, savepath=None,
 
 
 @contextlib.contextmanager
-def remap_paths(rop_node, mapping):
-    """Enable the AyonRemapPaths output processor with provided `mapping`"""
+def remap_paths(rop_node, mapping, *, expected_output=None):
+    """Remap USD references and optionally check the root layer save path."""
     from ayon_houdini.api.lib import parm_values
 
-    if not mapping:
+    if not mapping and expected_output is None:
         # Do nothing
         yield
         return
 
     # Houdini string parms need to escape backslashes due to the support
     # of expressions - as such we do so on the json data
-    value = json.dumps(mapping).replace("\\", "\\\\")
+    payload = {
+        "mapping": mapping,
+        "expected_output": expected_output,
+    }
+    value = json.dumps(payload).replace("\\", "\\\\")
     with outputprocessors(
         rop_node,
         processors=["ayon_remap_paths"],

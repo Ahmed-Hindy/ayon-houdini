@@ -13,6 +13,7 @@ class AYONRemapPaths(OutputProcessor):
 
     def __init__(self):
         self._mapping = dict()
+        self._expected_output = None
 
     @staticmethod
     def name():
@@ -55,8 +56,14 @@ class AYONRemapPaths(OutputProcessor):
         super(AYONRemapPaths, self).beginSave(*args)
 
         value = config_node.evalParm("ayon_remap_paths_remap_json")
-        mapping = json.loads(value)
-        assert isinstance(self._mapping, dict)
+        payload = json.loads(value)
+        if isinstance(payload.get("mapping"), dict):
+            mapping = payload["mapping"]
+            self._expected_output = payload.get("expected_output")
+        else:
+            # Older scenes can already have a mapping on the ROP.
+            mapping = payload
+            self._expected_output = None
 
         # Ensure all keys are normalized paths so the lookup can be done
         # correctly
@@ -64,6 +71,26 @@ class AYONRemapPaths(OutputProcessor):
             os.path.normpath(key): value for key, value in mapping.items()
         }
         self._mapping = mapping
+
+    def processSavePath(self, asset_path, referencing_layer_path,
+                        asset_is_layer):
+        # An explicit child layer has a referencing layer. The root does not.
+        if (
+            not self._expected_output
+            or referencing_layer_path
+            or not asset_is_layer
+        ):
+            return asset_path
+
+        actual = os.path.normcase(os.path.abspath(asset_path))
+        expected = os.path.normcase(os.path.abspath(self._expected_output))
+        if actual != expected:
+            raise RuntimeError(
+                f"USD ROP {self.config_node.path()} would save its root "
+                f"layer to {asset_path!r}. The planned output was "
+                f"{self._expected_output!r}."
+            )
+        return asset_path
 
     def processReferencePath(self,
                              asset_path,

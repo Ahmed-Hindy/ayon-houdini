@@ -2,9 +2,12 @@
 
 import ast
 import contextlib
+import importlib.util
+import json
 import logging
 import os
 from pathlib import Path
+import runpy
 import tempfile
 import types
 import unittest
@@ -13,6 +16,10 @@ from pxr import Sdf, Usd
 
 ROOT = Path(__file__).parents[1]
 SOURCE = ROOT / "client/ayon_houdini/plugins/publish/extract_usd.py"
+PROCESSOR = (
+    ROOT / "client/ayon_houdini/startup/husdplugins/outputprocessors/"
+    "remap_to_publish.py"
+)
 
 
 class PublishError(Exception):
@@ -96,7 +103,8 @@ class TestUsdPlanning(unittest.TestCase):
         current_mapping = {}
 
         @contextlib.contextmanager
-        def remap(node, mapping):
+        def remap(node, mapping, *, expected_output):
+            assert expected_output == paths[node.path]
             current_mapping.clear()
             current_mapping.update(mapping)
             yield
@@ -255,6 +263,52 @@ class TestUsdPlanning(unittest.TestCase):
             )
             extractor.process(a)
             self.assertTrue(Path(paths["/out/A"]).exists())
+
+    def test_dependency_changed_during_render_fails_current_extraction(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            context, a, b, child, collector, extractor, paths, env = (
+                self.build(tmp)
+            )
+            collector.process(a)
+            collector.process(b)
+            render = env["render_rop"]
+            model_rop = env["hou"].node("/out/B")
+
+            def render_then_change_dependency(node):
+                render(node)
+                model_rop.evalParm = lambda name: str(
+                    Path(tmp) / "changed_B.usda"
+                )
+
+            env["render_rop"] = render_then_change_dependency
+            with self.assertRaisesRegex(PublishError, "different USD"):
+                extractor.process(a)
+            self.assertTrue(Path(paths["/out/A"]).exists())
+
+    @unittest.skipUnless(importlib.util.find_spec("hou"), "Requires Houdini")
+    def test_output_processor_checks_only_the_root_save_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            planned = str(Path(tmp) / "model.usda")
+            actual = str(Path(tmp) / "other.usda")
+            Path(planned).touch()
+            processor = runpy.run_path(str(PROCESSOR))["AYONRemapPaths"]()
+            node = types.SimpleNamespace(
+                path=lambda: "/out/B",
+                evalParm=lambda name: json.dumps({
+                    "mapping": {},
+                    "expected_output": planned,
+                }),
+            )
+            processor.beginSave(node, {}, None, 0, {})
+
+            self.assertEqual(
+                processor.processSavePath(actual, planned, True), actual
+            )
+            self.assertEqual(
+                processor.processSavePath(planned, "", True), planned
+            )
+            with self.assertRaisesRegex(RuntimeError, "planned output"):
+                processor.processSavePath(actual, "", True)
 
 
 if __name__ == "__main__":

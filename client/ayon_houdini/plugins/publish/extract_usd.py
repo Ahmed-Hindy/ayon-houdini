@@ -89,9 +89,11 @@ class ExtractUSD(plugin.HoudiniExtractorPlugin):
                            f"{instance_mapping}")
         mapping.update(instance_mapping)
 
-        with remap_paths(ropnode, mapping):
+        with remap_paths(ropnode, mapping, expected_output=output):
             render_rop(ropnode)
 
+        # ROP callbacks can change a dependency after the preflight.
+        self.validate_planned_outputs(instance.context)
         if not os.path.exists(output):
             raise PublishError(f"Output does not exist: {output}")
 
